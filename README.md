@@ -1,98 +1,152 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# URL Shortener Backend Service
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A high-performance URL shortener backend service inspired by Bitly, built using NestJS, PostgreSQL, and Redis.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## 🚀 Features
 
-## Description
+### Core Functionality
+- **Create Short URLs**: Generate unique 7-character short links for any long URL.
+- **Redirection**: Fast redirection to original URLs using Redis caching.
+- **Click Analytics**: Track detailed usage of shortened URLs, including total clicks and unique visitors.
+- **User Dashboard**: Retrieve all previously generated links for a specific `user_id`.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+### Bonus Features Implemented
+- 🛡️ **Rate Limiting**: Integrated using `@nestjs/throttler` (Global limits + Strict limit on URL creation).
+- 🎲 **Collision-Free Generation**: Advanced retry mechanisms utilizing `nanoid` to ensure code uniqueness.
+- 🕒 **URL Expiration**: Time-based short code expiration validation at redirection time.
+- 👤 **Unique Tracking**: Tracks distinct visitors using IP addresses asynchronously over standard click events.
 
-## Project setup
+---
 
+## 🛠️ Technology Stack
+
+- **Framework**: [NestJS](https://nestjs.com/) (TypeScript)
+- **Database**: [PostgreSQL](https://www.postgresql.org/) (via TypeORM)
+- **Caching**: [Redis](https://redis.io/) (via `ioredis`) for speeding up database reads/redirects.
+- **Hosting**: Deployed on [Render](https://render.com/) *(If Applicable)*.
+
+---
+
+## 🏃‍♂️ Local Setup Instructions
+
+### 1. Prerequisites
+- Node.js (v18+)
+- PostgreSQL installed locally or remotely
+- Redis server instance
+
+### 2. Installation
+Clone the repository and install the dependencies:
 ```bash
-$ npm install
+git clone <repository-url>
+cd url_shortener
+npm install
 ```
 
-## Compile and run the project
+### 3. Environment Variables
+Create a `.env` file in the root directory and add the following keys. Example:
+```env
+# PostgreSQL connection string
+POSTGRES_DB_URL=postgresql://username:password@hostname:5432/database_name
 
+# Redis connection string
+REDIS_URL=redis://username:password@hostname:6379
+
+# The root URL for your application (determines the short_url output base)
+BASE_URL="http://localhost:3000"
+```
+
+### 4. Running the Application
 ```bash
 # development
-$ npm run start
+npm run start
 
 # watch mode
-$ npm run start:dev
+npm run start:dev
 
 # production mode
-$ npm run start:prod
+npm run start:prod
 ```
+The server will be running normally on `http://localhost:3000`.
 
-## Run tests
+---
 
-```bash
-# unit tests
-$ npm run test
+## 📑 API Documentation
 
-# e2e tests
-$ npm run test:e2e
+### 1. Create Short URL
+Generates a short URL code and stores the mapping.
 
-# test coverage
-$ npm run test:cov
-```
+- **URL:** `POST /shorten`
+- **Request Body:**
+  ```json
+  {
+    "original_url": "https://example.com/product/123",
+    "user_id": "U123",            // Optional string identifier
+    "expires_at": "2026-12-31"    // Optional expiration date
+  }
+  ```
+- **Response:**
+  ```json
+  {
+    "short_url": "http://localhost:3000/aX7kP2x",
+    "original_url": "https://example.com/product/123"
+  }
+  ```
 
-## Deployment
+### 2. Redirect URL
+Redirects the user to the underlying original link while recording analytics in the background.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+- **URL:** `GET /:short_code`
+- **Response:** HTTP `302 Found` Redirect to the `original_url`.
+- **Note:** Responses are primarily resolved against the Redis Cache for speed.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 3. Click Analytics
+Retrieves click activity for a specific short link.
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+- **URL:** `GET /analytics/:short_code`
+- **Response:**
+  ```json
+  {
+    "short_code": "aX7kP2x",
+    "original_url": "https://example.com/product/123",
+    "total_clicks": 152,
+    "unique_visitors": 45
+  }
+  ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+### 4. List User URLs
+Outputs an aggregated view of all URLs shortened under a specific user tracking ID.
 
-## Resources
+- **URL:** `GET /urls/:user_id`
+- **Response:**
+  ```json
+  {
+    "user_id": "U123",
+    "urls": [
+      {
+        "short_code": "aX7kP2x",
+        "original_url": "https://example.com/product/123",
+        "clicks": 152,
+        "created_at": "2026-03-17T04:20:00.000Z"
+      }
+    ]
+  }
+  ```
 
-Check out a few resources that may come in handy when working with NestJS:
+---
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+## 📐 Database Architecture (PostgreSQL)
 
-## Support
+**Table: `urls`**
+- `id` (UUID, Primary Key)
+- `short_code` (VARCHAR 20, Unique Index)
+- `original_url` (TEXT)
+- `user_id` (VARCHAR 100, Nullable)
+- `expires_at` (TIMESTAMP, Nullable)
+- `created_at` (TIMESTAMP)
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+**Table: `clicks`**
+- `id` (UUID, Primary Key)
+- `short_code` (VARCHAR 20, Index)
+- `ip_address` (VARCHAR 45)
+- `user_agent` (TEXT, Nullable)
+- `created_at` (TIMESTAMP)
