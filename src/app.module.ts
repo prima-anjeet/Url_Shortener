@@ -9,6 +9,7 @@ import { RedisModule } from './redis/redis.module.js';
 import { UrlModule } from './url/url.module.js';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
+import { HealthController } from './health/health.controller.js';
 
 @Module({
   imports: [
@@ -33,7 +34,7 @@ import { AppService } from './app.service.js';
     RedisModule,
     UrlModule,
   ],
-  controllers: [AppController],
+  controllers: [AppController, HealthController],
   providers: [
     AppService,
     {

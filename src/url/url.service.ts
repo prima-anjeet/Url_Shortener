@@ -18,6 +18,11 @@ const MAX_COLLISION_RETRIES = 5;
 const REDIS_CACHE_TTL = 3600; // 1 hour
 const REDIS_KEY_PREFIX = 'short_url:';
 
+interface CachedUrlEntry {
+  original_url: string;
+  expires_at: string | null; // ISO string or null
+}
+
 @Injectable()
 export class UrlService {
   private readonly logger = new Logger(UrlService.name);
@@ -34,21 +39,52 @@ export class UrlService {
     dto: CreateUrlDto,
     baseUrl: string,
   ): Promise<{ short_url: string; original_url: string }> {
-    const shortCode = await this.generateUniqueShortCode();
+    let shortCode: string | null = null;
 
-    const url = this.urlRepository.create({
-      short_code: shortCode,
+    for (let attempt = 0; attempt < MAX_COLLISION_RETRIES; attempt++) {
+      const candidate = nanoid(SHORT_CODE_LENGTH);
+
+      const url = this.urlRepository.create({
+        short_code: candidate,
+        original_url: dto.original_url,
+        user_id: dto.user_id || null,
+        expires_at: dto.expires_at ? new Date(dto.expires_at) : null,
+      });
+
+      try {
+        await this.urlRepository.save(url);
+        shortCode = candidate;
+        break;
+      } catch (err: unknown) {
+        // PostgreSQL unique_violation = error code 23505
+        const isUniqueViolation =
+          typeof err === 'object' &&
+          err !== null &&
+          'code' in err &&
+          (err as { code: string }).code === '23505';
+
+        if (!isUniqueViolation) throw err;
+
+        this.logger.warn(
+          `Short code collision on INSERT: ${candidate}, retrying (${attempt + 1}/${MAX_COLLISION_RETRIES})`,
+        );
+      }
+    }
+
+    if (!shortCode) {
+      throw new InternalServerErrorException(
+        'Failed to generate unique short code after maximum retries',
+      );
+    }
+
+    // Cache full entry so redirect path never needs a DB fallback for expiry
+    const entry: CachedUrlEntry = {
       original_url: dto.original_url,
-      user_id: dto.user_id || null,
-      expires_at: dto.expires_at ? new Date(dto.expires_at) : null,
-    });
-
-    await this.urlRepository.save(url);
-
-    // Cache in Redis
+      expires_at: dto.expires_at ?? null,
+    };
     await this.redisService.set(
       `${REDIS_KEY_PREFIX}${shortCode}`,
-      dto.original_url,
+      JSON.stringify(entry),
       REDIS_CACHE_TTL,
     );
 
@@ -63,54 +99,54 @@ export class UrlService {
     ipAddress: string,
     userAgent: string,
   ): Promise<string> {
-    // 1. Check Redis cache
-    let originalUrl = await this.redisService.get(
-      `${REDIS_KEY_PREFIX}${shortCode}`,
-    );
+    const cacheKey = `${REDIS_KEY_PREFIX}${shortCode}`;
 
-    let urlRecord: Url | null = null;
+    // 1. Check Redis cache — entry holds both url and expiry so no DB query needed
+    const cached = await this.redisService.get(cacheKey);
 
-    if (!originalUrl) {
-      // 2. Fallback to database
-      urlRecord = await this.urlRepository.findOne({
-        where: { short_code: shortCode },
-      });
+    if (cached) {
+      const entry: CachedUrlEntry = JSON.parse(cached);
 
-      if (!urlRecord) {
-        throw new NotFoundException(
-          `Short URL with code '${shortCode}' not found`,
-        );
+      if (entry.expires_at && new Date(entry.expires_at) < new Date()) {
+        await this.redisService.del(cacheKey);
+        throw new GoneException('This short URL has expired');
       }
 
-      originalUrl = urlRecord.original_url;
+      this.recordClick(shortCode, ipAddress, userAgent).catch((err) =>
+        this.logger.error('Failed to record click', err),
+      );
 
-      // 3. Cache in Redis
-      await this.redisService.set(
-        `${REDIS_KEY_PREFIX}${shortCode}`,
-        originalUrl,
-        REDIS_CACHE_TTL,
+      return entry.original_url;
+    }
+
+    // 2. Cache miss — fetch from database
+    const urlRecord = await this.urlRepository.findOne({
+      where: { short_code: shortCode },
+    });
+
+    if (!urlRecord) {
+      throw new NotFoundException(
+        `Short URL with code '${shortCode}' not found`,
       );
     }
 
-    // Check expiration
-    if (!urlRecord) {
-      urlRecord = await this.urlRepository.findOne({
-        where: { short_code: shortCode },
-      });
-    }
-
-    if (urlRecord?.expires_at && new Date(urlRecord.expires_at) < new Date()) {
-      // Remove expired cache
-      await this.redisService.del(`${REDIS_KEY_PREFIX}${shortCode}`);
+    if (urlRecord.expires_at && new Date(urlRecord.expires_at) < new Date()) {
       throw new GoneException('This short URL has expired');
     }
+
+    // 3. Populate cache for subsequent requests
+    const entry: CachedUrlEntry = {
+      original_url: urlRecord.original_url,
+      expires_at: urlRecord.expires_at ? urlRecord.expires_at.toISOString() : null,
+    };
+    await this.redisService.set(cacheKey, JSON.stringify(entry), REDIS_CACHE_TTL);
 
     // 4. Record click event asynchronously
     this.recordClick(shortCode, ipAddress, userAgent).catch((err) =>
       this.logger.error('Failed to record click', err),
     );
 
-    return originalUrl;
+    return urlRecord.original_url;
   }
 
   async getAnalytics(shortCode: string): Promise<{
@@ -163,42 +199,34 @@ export class UrlService {
       order: { created_at: 'DESC' },
     });
 
-    const urlsWithClicks = await Promise.all(
-      urls.map(async (url) => {
-        const clicks = await this.clickRepository.count({
-          where: { short_code: url.short_code },
-        });
-        return {
-          short_code: url.short_code,
-          original_url: url.original_url,
-          clicks,
-          created_at: url.created_at,
-        };
-      }),
+    if (urls.length === 0) {
+      return { user_id: userId, urls: [] };
+    }
+
+    // Single GROUP BY query instead of N+1 count queries
+    const shortCodes = urls.map((u) => u.short_code);
+    const clickCounts: Array<{ short_code: string; count: string }> =
+      await this.clickRepository
+        .createQueryBuilder('click')
+        .select('click.short_code', 'short_code')
+        .addSelect('COUNT(*)', 'count')
+        .where('click.short_code IN (:...shortCodes)', { shortCodes })
+        .groupBy('click.short_code')
+        .getRawMany();
+
+    const clickMap = new Map(
+      clickCounts.map((r) => [r.short_code, parseInt(r.count, 10)]),
     );
 
     return {
       user_id: userId,
-      urls: urlsWithClicks,
+      urls: urls.map((url) => ({
+        short_code: url.short_code,
+        original_url: url.original_url,
+        clicks: clickMap.get(url.short_code) ?? 0,
+        created_at: url.created_at,
+      })),
     };
-  }
-
-  private async generateUniqueShortCode(): Promise<string> {
-    for (let attempt = 0; attempt < MAX_COLLISION_RETRIES; attempt++) {
-      const code = nanoid(SHORT_CODE_LENGTH);
-      const existing = await this.urlRepository.findOne({
-        where: { short_code: code },
-      });
-      if (!existing) {
-        return code;
-      }
-      this.logger.warn(
-        `Short code collision detected: ${code}, retrying (${attempt + 1}/${MAX_COLLISION_RETRIES})`,
-      );
-    }
-    throw new InternalServerErrorException(
-      'Failed to generate unique short code after maximum retries',
-    );
   }
 
   private async recordClick(
